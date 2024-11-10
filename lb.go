@@ -70,13 +70,39 @@ func (lb *LoadBalancer) AddNode(rawURL string, bpm, rpm int64) error {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 
+	proxy := httputil.NewSingleHostReverseProxy(nodeURL)
+
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		if req.Header.Get("Accept") == "text/event-stream" {
+			req.Header.Set("Connection", "keep-alive")
+			req.Header.Set("Cache-Control", "no-cache")
+		}
+	}
+
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Header.Get("Content-Type") == "text/event-stream" {
+			resp.Header.Set("Connection", "keep-alive")
+			resp.Header.Set("Cache-Control", "no-cache")
+			resp.Header.Set("Transfer-Encoding", "chunked")
+		}
+		return nil
+	}
+
 	node := &Node{
 		URL: nodeURL,
 		RateLimit: RateLimit{
 			bpm: bpm,
 			rpm: rpm,
 		},
-		proxy:     httputil.NewSingleHostReverseProxy(nodeURL),
+		proxy:     proxy,
 		lastReset: time.Now(),
 	}
 
